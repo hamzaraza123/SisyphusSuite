@@ -1,108 +1,204 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 
 /* ════════════════════════════════════════════════════════════════════════════
+   ASSET CONFIGURATION
+   ════════════════════════════════════════════════════════════════════════════ */
+const AUDIO_DIR = './assets/audio'; // Configure this to your audio folder path
+const IMAGE_DIR = './assets/images'; // Configure this to your images folder path
+
+const FAIL_AUDIO = `${AUDIO_DIR}/fail.mp3`;                 // Stage 1 Reset Audio
+const LAUGH_AUDIO = `${AUDIO_DIR}/laugh.mp3`;               // Stage 1 Reset Voice Laugh Audio
+const EVASIVE_INTERVAL_AUDIO = `${AUDIO_DIR}/interval.mp3`;   // Stage 2 Interval Audio
+const BIRD_AVATAR = `${IMAGE_DIR}/bird.png`;                 // Stage 3 Bird Avatar Image
+const CRASH_AUDIO = `${AUDIO_DIR}/crash.mp3`;               // Stage 3 Crash Audio
+const DUMMY_AUDIO = `${AUDIO_DIR}/dummy.mp3`;               // Stage 5 "DUMMY!" Audio
+const FINAL_IMAGE = `${IMAGE_DIR}/final.png`;               // Final Stage Top-Center Image
+
+const SHOW_FLAPPY_OBSTACLES = false; // Set to true to make obstacles (ceiling, floor, and moving columns) visible, or false to make them completely invisible
+
+/* ════════════════════════════════════════════════════════════════════════════
    CONSTANTS
    ════════════════════════════════════════════════════════════════════════════ */
 const CANVAS_W = 640;
 const CANVAS_H = 400;
-const CEIL_Y   = 20;
-const FLOOR_Y  = CANVAS_H - 20;
+const CEIL_Y   = 60;
+const FLOOR_Y  = CANVAS_H - 60;
 const BIRD_SZ  = 24;
 const GRAVITY  = 0.45;
 const FLAP_VY  = -9;
 const BTN_W    = 200;
 const BTN_H    = 52;
 
-/* ════════════════════════════════════════════════════════════════════════════
-   AUDIO  (Web Audio API – no external assets)
-   ════════════════════════════════════════════════════════════════════════════ */
-function getCtx(): AudioContext {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const Ctor = window.AudioContext ?? (window as any).webkitAudioContext;
-  return new Ctor() as AudioContext;
-}
+const FLAPPY_OBSTACLE_GAP   = 100;
+const FLAPPY_OBSTACLE_SPEED = 4;
+const FLAPPY_OBSTACLE_WIDTH = 50;
+const FLAPPY_SPAWN_INTERVAL = 110;
 
-function playLaugh(): void {
+function playAudioFile(src: string): void {
   try {
-    const ctx = getCtx();
-    // Four "HA" bursts – rapid alternating sawtooth tones
-    [0, 0.28, 0.56, 0.84].forEach(burst => {
-      for (let i = 0; i < 7; i++) {
-        const osc  = ctx.createOscillator();
-        const gain = ctx.createGain();
-        osc.connect(gain);
-        gain.connect(ctx.destination);
-        osc.type          = 'sawtooth';
-        osc.frequency.value = i % 2 === 0 ? 880 : 622;
-        const t = ctx.currentTime + burst + i * 0.027;
-        gain.gain.setValueAtTime(0.28, t);
-        gain.gain.exponentialRampToValueAtTime(0.001, t + 0.024);
-        osc.start(t);
-        osc.stop(t + 0.024);
-      }
-    });
-  } catch { /* Safari private / blocked */ }
-}
-
-function playFail(): void {
-  try {
-    const ctx = getCtx();
-    // Classic descending "wah-wah-wah-waaah" trombone
-    [466.16, 415.30, 369.99, 311.13].forEach((hz, i) => {
-      const osc  = ctx.createOscillator();
-      const gain = ctx.createGain();
-      osc.connect(gain);
-      gain.connect(ctx.destination);
-      osc.type          = 'sawtooth';
-      osc.frequency.value = hz;
-      const t = ctx.currentTime + i * 0.31;
-      gain.gain.setValueAtTime(0.38, t);
-      gain.gain.exponentialRampToValueAtTime(0.001, t + 0.29);
-      osc.start(t);
-      osc.stop(t + 0.29);
-    });
-  } catch { /* noop */ }
+    const audio = new Audio(src);
+    audio.play().catch(() => { /* ignored */ });
+  } catch { /* ignored */ }
 }
 
 /* ════════════════════════════════════════════════════════════════════════════
    COMPONENT
    ════════════════════════════════════════════════════════════════════════════ */
-type Stage = 0 | 1 | 2 | 3 | 4 | 5;
+type Stage = 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7;
 
 const SisyphusSuite: React.FC = () => {
 
   /* ── Shared ────────────────────────────────────────────────────────────── */
-  const [stage,      setStage     ] = useState<Stage>(0);
-  const [clicks,     setClicks    ] = useState(0);
+  const [stage, setStage] = useState<Stage>(0);
+  const [completedStage, setCompletedStage] = useState<number | null>(null);
   const startTs = useRef<number | null>(null);
-  const tap = useCallback(() => setClicks(c => c + 1), []);
+  const tap = useCallback(() => {}, []);
+  const pityTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const stage3PityTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  /* ── Stage 1 ───────────────────────────────────────────────────────────── */
+  /* ── Stage 1: Slider ───────────────────────────────────────────────────── */
   const [sliderVal, setSliderVal] = useState(0);
+  const [stage1Fails, setStage1Fails] = useState(0);
+  const [stage1PityActive, setStage1PityActive] = useState(false);
 
-  /* ── Stage 2 ───────────────────────────────────────────────────────────── */
+  /* ── Stage 2: Evasive Button ───────────────────────────────────────────── */
   const [btnPos, setBtnPos] = useState({ x: 0, y: 0 });
   const [misses, setMisses] = useState(0);
+  const [stage2PityActive, setStage2PityActive] = useState(false);
 
-  /* ── Stage 3 ───────────────────────────────────────────────────────────── */
-  const canvasRef    = useRef<HTMLCanvasElement>(null);
-  const rafRef       = useRef<number | null>(null);
-  const intervalRef  = useRef<ReturnType<typeof setInterval> | null>(null);
-  const [cdDisplay,   setCdDisplay  ] = useState(5);
-  const [hasStarted,  setHasStarted ] = useState(false);
-  const [hasFailed,   setHasFailed  ] = useState(false);
+  /* ── Stage 3: Flappy Bird ──────────────────────────────────────────────── */
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const birdImgRef = useRef<HTMLImageElement>(null);
+  const rafRef = useRef<number | null>(null);
+  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const [cdDisplay, setCdDisplay] = useState(5);
+  const [hasStarted, setHasStarted] = useState(false);
+  const [hasFailed, setHasFailed] = useState(false);
+  const [stage3Fails, setStage3Fails] = useState(0);
+  const [stage3PityActive, setStage3PityActive] = useState(false);
 
-  /* ── Stage 4 ───────────────────────────────────────────────────────────── */
+  /* ── Stage 4: Slider Pong ──────────────────────────────────────────────── */
+  const pongCanvasRef = useRef<HTMLCanvasElement>(null);
+  const [pongScore, setPongScore] = useState(0);
+  const [stage4Fails, setStage4Fails] = useState(0);
+  const [pongSliderVal, setPongSliderVal] = useState(50);
+  const pongSliderValRef = useRef<number>(50);
+  const [pongStarted, setPongStarted] = useState(false);
+  const pongStartedRef = useRef(false);
+  const [pongPassed, setPongPassed] = useState(false);
+  const pongTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  /* ── Stage 5: Crossword ────────────────────────────────────────────────── */
+  const [isSelecting, setIsSelecting] = useState(false);
+  const [selectStart, setSelectStart] = useState<{ r: number, c: number } | null>(null);
+  const [highlightedCells, setHighlightedCells] = useState<{ r: number, c: number }[]>([]);
+  const [crosswordError, setCrosswordError] = useState(false);
+  const [arrowVisible, setArrowVisible] = useState(false);
+  const [arrowOpacity, setArrowOpacity] = useState(false);
+  const [crosswordFails, setCrosswordFails] = useState(0);
+  const [crosswordNextPopupActive, setCrosswordNextPopupActive] = useState(false);
+  const dummyTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  /* ── Stage 6: Leaderboard ──────────────────────────────────────────────── */
   const confettiRef = useRef<HTMLCanvasElement>(null);
   const [nameInput, setNameInput] = useState('');
 
-  /* ── Stage 5 ───────────────────────────────────────────────────────────── */
-  const [savedName,  setSavedName ] = useState('');
-  const [finalTime,  setFinalTime ] = useState({ m: 0, s: 0 });
-  const [finalClicks,setFinalClicks] = useState(0);
+  /* ── Stage 7: Betrayal ─────────────────────────────────────────────────── */
+  const [savedName, setSavedName] = useState('');
+  const [finalTime, setFinalTime] = useState({ m: 0, s: 0 });
+  const [finalFails, setFinalFails] = useState(0);
+
+  /* ── Quit Confirmation Popup ───────────────────────────────────────────── */
+  const [showQuitConfirm, setShowQuitConfirm] = useState(false);
+  const showQuitConfirmRef = useRef(false);
+  useEffect(() => {
+    showQuitConfirmRef.current = showQuitConfirm;
+  }, [showQuitConfirm]);
+
+  /* ── Crossword Grid Constants ──────────────────────────────────────────── */
+  const crosswordGrid: string[][] = [
+    ['F', 'I', 'N', 'D', 'X', 'Y', 'Z', 'W'],
+    ['Q', 'U', 'E', 'S', 'T', 'I', 'O', 'N'],
+    ['H', 'E', 'L', 'L', 'O', 'W', 'P', 'R'],
+    ['M', 'A', 'T', 'R', 'I', 'X', 'A', 'D'],
+    ['S', 'W', '0', 'R', 'D', 'S', 'E', 'V'], // Red Herring "W0RDS" is here
+    ['P', 'U', 'Z', 'Z', 'L', 'E', 'K', 'J'],
+    ['C', 'O', 'D', 'E', 'R', 'G', 'F', 'S'],
+    ['B', 'E', 'T', 'R', 'A', 'Y', 'A', 'L']
+  ];
 
   /* ════════════════════════════════════════════════════════════════════════
-     STAGE 0 — Landing
+     GLOBAL QUIT & TIMEOUT CLEANUP
+     ════════════════════════════════════════════════════════════════════════ */
+  const handleQuit = (): void => {
+    // Reset all game states
+    setStage(0);
+    setCompletedStage(null);
+    setSliderVal(0);
+    setStage1Fails(0);
+    setStage1PityActive(false);
+    setMisses(0);
+    setStage2PityActive(false);
+    setCdDisplay(5);
+    setHasStarted(false);
+    setHasFailed(false);
+    setStage3Fails(0);
+    setStage3PityActive(false);
+    setPongScore(0);
+    setStage4Fails(0);
+    setPongSliderVal(50);
+    pongSliderValRef.current = 50;
+    setPongStarted(false);
+    pongStartedRef.current = false;
+    setPongPassed(false);
+    setIsSelecting(false);
+    setSelectStart(null);
+    setHighlightedCells([]);
+    setCrosswordError(false);
+    setArrowVisible(false);
+    setArrowOpacity(false);
+    setNameInput('');
+    setSavedName('');
+    setFinalTime({ m: 0, s: 0 });
+    setCrosswordFails(0);
+    setCrosswordNextPopupActive(false);
+    setFinalFails(0);
+    startTs.current = null;
+
+    if (dummyTimeoutRef.current) {
+      clearTimeout(dummyTimeoutRef.current);
+      dummyTimeoutRef.current = null;
+    }
+    if (pongTimerRef.current) {
+      clearTimeout(pongTimerRef.current);
+      pongTimerRef.current = null;
+    }
+    if (pityTimerRef.current) {
+      clearTimeout(pityTimerRef.current);
+      pityTimerRef.current = null;
+    }
+    if (stage3PityTimerRef.current) {
+      clearTimeout(stage3PityTimerRef.current);
+      stage3PityTimerRef.current = null;
+    }
+  };
+
+  useEffect(() => {
+    return () => {
+      if (dummyTimeoutRef.current) {
+        clearTimeout(dummyTimeoutRef.current);
+      }
+      if (pongTimerRef.current) {
+        clearTimeout(pongTimerRef.current);
+      }
+      if (pityTimerRef.current) {
+        clearTimeout(pityTimerRef.current);
+      }
+    };
+  }, []);
+
+  /* ════════════════════════════════════════════════════════════════════════
+     STAGE 0 — Home Screen (Begin Action)
      ════════════════════════════════════════════════════════════════════════ */
   const handleBegin = (): void => {
     tap();
@@ -114,41 +210,92 @@ const SisyphusSuite: React.FC = () => {
      STAGE 1 — Slider
      ════════════════════════════════════════════════════════════════════════ */
   const handleSliderRelease = (): void => {
+    if (showQuitConfirmRef.current) return;
     if (sliderVal === 50) {
-      setStage(2);
+      setCompletedStage(1);
     } else {
-      playLaugh();
-      setSliderVal(0);
+      const nextFails = stage1Fails + 1;
+      setStage1Fails(nextFails);
+
+      if (nextFails >= 50) {
+        setStage1PityActive(true);
+        pityTimerRef.current = setTimeout(() => {
+          setStage1PityActive(false);
+          setMisses(0);
+          setBtnPos({
+            x: (window.innerWidth - BTN_W) / 2,
+            y: (window.innerHeight - BTN_H) / 2,
+          });
+          setStage(2);
+        }, 5000); // Overlay displays for exactly 5 seconds
+      } else {
+        playAudioFile(FAIL_AUDIO);
+        playAudioFile(LAUGH_AUDIO);
+        setSliderVal(0);
+      }
     }
   };
 
   /* ════════════════════════════════════════════════════════════════════════
      STAGE 2 — Evasive Button
      ════════════════════════════════════════════════════════════════════════ */
+  // Center evasive button initially and on resize within safe boundaries
   useEffect(() => {
     if (stage !== 2) return;
-    setMisses(0);
-    setBtnPos({
-      x: (window.innerWidth  - BTN_W) / 2,
-      y: (window.innerHeight - BTN_H) / 2,
-    });
+    const centerButton = () => {
+      const safeY = 140 + (Math.max(140, window.innerHeight - 160 - BTN_H) - 140) / 2;
+      const safeX = 16 + (Math.max(16, window.innerWidth - BTN_W - 16) - 16) / 2;
+      setBtnPos({ x: safeX, y: safeY });
+    };
+    centerButton();
     const onResize = () =>
-      setBtnPos(p => ({
-        x: Math.min(p.x, window.innerWidth  - BTN_W - 16),
-        y: Math.min(p.y, window.innerHeight - BTN_H - 16),
-      }));
+      setBtnPos(p => {
+        const minY = 140;
+        const maxY = Math.max(minY, window.innerHeight - 160 - BTN_H);
+        const minX = 16;
+        const maxX = Math.max(minX, window.innerWidth - BTN_W - 16);
+        return {
+          x: Math.min(Math.max(p.x, minX), maxX),
+          y: Math.min(Math.max(p.y, minY), maxY),
+        };
+      });
     window.addEventListener('resize', onResize);
     return () => window.removeEventListener('resize', onResize);
   }, [stage]);
 
+  // Stage 2: Interval Audio playing
+  useEffect(() => {
+    if (stage !== 2) return;
+    const intervalId = setInterval(() => {
+      playAudioFile(EVASIVE_INTERVAL_AUDIO);
+    }, 3500); // Plays Stage 2 Interval Audio every 3.5 seconds
+    return () => clearInterval(intervalId);
+  }, [stage]);
+
   const evadeButton = useCallback((): void => {
-    const m = 16;
+    if (showQuitConfirmRef.current) return;
+    const nextMisses = misses + 1;
+    setMisses(nextMisses);
+
+    if (nextMisses >= 100) {
+      setStage2PityActive(true);
+      pityTimerRef.current = setTimeout(() => {
+        setStage2PityActive(false);
+        setStage(3);
+      }, 5000); // Overlay displays for exactly 5 seconds
+      return;
+    }
+
+    const minX = 16;
+    const maxX = Math.max(minX, window.innerWidth - BTN_W - 16);
+    const minY = 140;
+    const maxY = Math.max(minY, window.innerHeight - 160 - BTN_H);
+
     setBtnPos({
-      x: m + Math.random() * (window.innerWidth  - BTN_W - m * 2),
-      y: m + Math.random() * (window.innerHeight - BTN_H - m * 2),
+      x: minX + Math.random() * (maxX - minX),
+      y: minY + Math.random() * (maxY - minY),
     });
-    setMisses(c => c + 1);
-  }, []);
+  }, [misses]);
 
   /* ════════════════════════════════════════════════════════════════════════
      STAGE 3 — Invisible Flappy Bird
@@ -156,12 +303,29 @@ const SisyphusSuite: React.FC = () => {
   useEffect(() => {
     if (stage !== 3) return;
 
+    // Time-based pity timer of 45 seconds
+    stage3PityTimerRef.current = setTimeout(() => {
+      setStage3PityActive(true);
+      pityTimerRef.current = setTimeout(() => {
+        setStage3PityActive(false);
+        setStage(4);
+      }, 5000);
+    }, 45000);
+
     const canvas = canvasRef.current;
     if (!canvas) return;
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
-    // Local mutable state for this effect instance — safe across async callbacks
+    interface FlappyPipe {
+      x: number;
+      topHeight: number;
+      bottomHeight: number;
+    }
+
+    let pipes: FlappyPipe[] = [];
+    let spawnTimer = 0;
+
     const game = { started: false, failing: false, countdown: 5, alive: true };
     const bird = { y: CANVAS_H / 2, vy: 0, vis: true };
 
@@ -169,80 +333,204 @@ const SisyphusSuite: React.FC = () => {
     setHasStarted(false);
     setHasFailed(false);
 
-    /* ── Flap logic ── */
+    // Initial position render of the bird avatar (visible at start)
+    if (birdImgRef.current) {
+      birdImgRef.current.style.top = `${(bird.y / CANVAS_H) * 100}%`;
+      birdImgRef.current.style.display = 'block';
+    }
+
+    const spawnPipe = (): void => {
+      const totalPipeHeight = (FLOOR_Y - CEIL_Y) - FLAPPY_OBSTACLE_GAP;
+      const minPipeHeight = 30;
+      const maxPipeHeight = totalPipeHeight - minPipeHeight;
+      const topHeight = minPipeHeight + Math.random() * (maxPipeHeight - minPipeHeight);
+      const bottomHeight = totalPipeHeight - topHeight;
+
+      pipes.push({
+        x: CANVAS_W,
+        topHeight,
+        bottomHeight
+      });
+    };
+
     const flap = (): void => {
       if (!game.alive || game.failing) return;
+      if (showQuitConfirmRef.current) return;
       tap();
 
       if (!game.started) {
         game.started   = true;
         game.countdown = 5;
-        bird.vis       = false;          // 💀 Invisible the instant they press Space
+        // Keep bird visible at all times, no hide trigger on start
+        bird.vis       = true;
+        if (birdImgRef.current) birdImgRef.current.style.display = 'block';
         setHasStarted(true);
         setCdDisplay(5);
 
+        spawnPipe();
+        spawnTimer = 0;
+
         intervalRef.current = setInterval(() => {
+          if (showQuitConfirmRef.current) return;
           game.countdown -= 1;
           setCdDisplay(game.countdown);
           if (game.countdown <= 0) {
-            if (intervalRef.current) { clearInterval(intervalRef.current); intervalRef.current = null; }
-            if (game.alive) setStage(4); // ✅ Success — advance
+            if (intervalRef.current) {
+              clearInterval(intervalRef.current);
+              intervalRef.current = null;
+            }
+            if (game.alive) setCompletedStage(3); // Transition to completed screen
           }
         }, 1000);
       }
       bird.vy = FLAP_VY;
     };
 
-    /* ── Input handlers ── */
     const onKey = (e: KeyboardEvent): void => {
-      if (e.code === 'Space') { e.preventDefault(); flap(); }
+      if (e.code === 'Space') {
+        e.preventDefault();
+        flap();
+      }
     };
     const onCanvasTap = (): void => flap();
     window.addEventListener('keydown', onKey);
     canvas.addEventListener('click', onCanvasTap);
 
-    /* ── Draw ── */
     const drawFrame = (): void => {
       ctx.fillStyle = '#000000';
       ctx.fillRect(0, 0, CANVAS_W, CANVAS_H);
-      // ceiling + floor zones
-      ctx.fillStyle = '#111827';
-      ctx.fillRect(0, 0, CANVAS_W, CEIL_Y);
-      ctx.fillRect(0, FLOOR_Y, CANVAS_W, CANVAS_H - FLOOR_Y);
-      // boundary lines
-      ctx.strokeStyle = '#374151';
-      ctx.lineWidth   = 2;
-      ctx.beginPath(); ctx.moveTo(0, CEIL_Y);  ctx.lineTo(CANVAS_W, CEIL_Y);  ctx.stroke();
-      ctx.beginPath(); ctx.moveTo(0, FLOOR_Y); ctx.lineTo(CANVAS_W, FLOOR_Y); ctx.stroke();
-      // bird (only if visible)
-      if (bird.vis) {
-        ctx.fillStyle = '#FCD34D';
-        ctx.fillRect(80, bird.y, BIRD_SZ, BIRD_SZ);
+      
+      if (SHOW_FLAPPY_OBSTACLES) {
+        // Draw obstacles visibly (bright slate gray background zone)
+        ctx.fillStyle = '#1e293b'; 
+        ctx.fillRect(0, 0, CANVAS_W, CEIL_Y);
+        ctx.fillRect(0, FLOOR_Y, CANVAS_W, CANVAS_H - FLOOR_Y);
+        
+        ctx.strokeStyle = '#f59e0b'; // Gold border line
+        ctx.lineWidth   = 3;
+        ctx.beginPath(); ctx.moveTo(0, CEIL_Y);  ctx.lineTo(CANVAS_W, CEIL_Y);  ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(0, FLOOR_Y); ctx.lineTo(CANVAS_W, FLOOR_Y); ctx.stroke();
+
+        // Draw moving pipes visibly
+        pipes.forEach(p => {
+          // Top pipe
+          ctx.fillStyle = '#1e293b';
+          ctx.fillRect(p.x, CEIL_Y, FLAPPY_OBSTACLE_WIDTH, p.topHeight);
+          
+          ctx.strokeStyle = '#f59e0b';
+          ctx.lineWidth   = 2;
+          ctx.strokeRect(p.x, CEIL_Y, FLAPPY_OBSTACLE_WIDTH, p.topHeight);
+
+          // Bottom pipe
+          ctx.fillStyle = '#1e293b';
+          ctx.fillRect(p.x, FLOOR_Y - p.bottomHeight, FLAPPY_OBSTACLE_WIDTH, p.bottomHeight);
+          
+          ctx.strokeRect(p.x, FLOOR_Y - p.bottomHeight, FLAPPY_OBSTACLE_WIDTH, p.bottomHeight);
+        });
+      } else {
+        // Obstacles stay completely invisible (drawn in black like the rest of the canvas)
+        ctx.fillStyle = '#000000';
+        ctx.fillRect(0, 0, CANVAS_W, CEIL_Y);
+        ctx.fillRect(0, FLOOR_Y, CANVAS_W, CANVAS_H - FLOOR_Y);
       }
     };
 
-    /* ── RAF loop ── */
     const loop = (): void => {
       if (!game.alive) return;
+      if (showQuitConfirmRef.current) {
+        drawFrame();
+        rafRef.current = requestAnimationFrame(loop);
+        return;
+      }
 
       if (game.started && !game.failing) {
         bird.vy += GRAVITY;
         bird.y  += bird.vy;
 
+        // Apply physics coordinate to DOM avatar wrapper responsively (always visible)
+        if (birdImgRef.current) {
+          birdImgRef.current.style.top = `${(bird.y / CANVAS_H) * 100}%`;
+          birdImgRef.current.style.display = 'block';
+        }
+
+        // Move pipes
+        pipes.forEach(p => {
+          p.x -= FLAPPY_OBSTACLE_SPEED;
+        });
+
+        // Filter off-screen pipes
+        pipes = pipes.filter(p => p.x + FLAPPY_OBSTACLE_WIDTH > 0);
+
+        // Spawn new pipes
+        spawnTimer++;
+        if (spawnTimer >= FLAPPY_SPAWN_INTERVAL) {
+          spawnTimer = 0;
+          spawnPipe();
+        }
+
+        // Collisions
         const hitCeil  = bird.y <= CEIL_Y;
         const hitFloor = bird.y + BIRD_SZ >= FLOOR_Y;
 
-        if (hitCeil || hitFloor) {
+        let hitPipe = false;
+        const birdLeft = 80;
+        const birdRight = 80 + BIRD_SZ;
+
+        for (let i = 0; i < pipes.length; i++) {
+          const p = pipes[i];
+          const pipeLeft = p.x;
+          const pipeRight = p.x + FLAPPY_OBSTACLE_WIDTH;
+
+          if (birdRight > pipeLeft && birdLeft < pipeRight) {
+            if (bird.y < CEIL_Y + p.topHeight) {
+              hitPipe = true;
+              break;
+            }
+            if (bird.y + BIRD_SZ > FLOOR_Y - p.bottomHeight) {
+              hitPipe = true;
+              break;
+            }
+          }
+        }
+
+        if (hitCeil || hitFloor || hitPipe) {
           game.failing = true;
           setHasFailed(true);
-          playFail();
-          if (intervalRef.current) { clearInterval(intervalRef.current); intervalRef.current = null; }
+          playAudioFile(CRASH_AUDIO);
+          if (intervalRef.current) {
+            clearInterval(intervalRef.current);
+            intervalRef.current = null;
+          }
+
+          setStage3Fails(prev => {
+            const next = prev + 1;
+            if (next >= 50) {
+              setStage3PityActive(true);
+              pityTimerRef.current = setTimeout(() => {
+                setStage3PityActive(false);
+                setStage(4);
+              }, 5000); // Pity displays overlay for 5 seconds
+            }
+            return next;
+          });
 
           setTimeout(() => {
-            if (!game.alive) return;     // Effect already cleaned up — abort
-            bird.y = CANVAS_H / 2; bird.vy = 0; bird.vis = true;
-            game.started = false; game.failing = false; game.countdown = 5;
-            setCdDisplay(5); setHasStarted(false); setHasFailed(false);
+            if (!game.alive) return;
+            bird.y = CANVAS_H / 2;
+            bird.vy = 0;
+            bird.vis = true;
+            game.started = false;
+            game.failing = false;
+            game.countdown = 5;
+            setCdDisplay(5);
+            setHasStarted(false);
+            setHasFailed(false);
+            pipes = [];
+            spawnTimer = 0;
+            if (birdImgRef.current) {
+              birdImgRef.current.style.top = `${(bird.y / CANVAS_H) * 100}%`;
+              birdImgRef.current.style.display = 'block';
+            }
           }, 2500);
         }
       }
@@ -253,21 +541,280 @@ const SisyphusSuite: React.FC = () => {
 
     rafRef.current = requestAnimationFrame(loop);
 
-    /* ── Cleanup ── */
     return (): void => {
       game.alive = false;
       window.removeEventListener('keydown', onKey);
       canvas.removeEventListener('click', onCanvasTap);
-      if (rafRef.current)      { cancelAnimationFrame(rafRef.current); rafRef.current = null; }
-      if (intervalRef.current) { clearInterval(intervalRef.current);   intervalRef.current = null; }
+      if (rafRef.current) {
+        cancelAnimationFrame(rafRef.current);
+        rafRef.current = null;
+      }
+      if (intervalRef.current) {
+        clearInterval(intervalRef.current);
+        intervalRef.current = null;
+      }
+      if (stage3PityTimerRef.current) {
+        clearTimeout(stage3PityTimerRef.current);
+        stage3PityTimerRef.current = null;
+      }
     };
-  }, [stage, tap]);
+  }, [stage, completedStage, tap]);
 
   /* ════════════════════════════════════════════════════════════════════════
-     STAGE 4 — Confetti
+     STAGE 4 — Slider Pong
      ════════════════════════════════════════════════════════════════════════ */
   useEffect(() => {
     if (stage !== 4) return;
+
+    const canvas = pongCanvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    let alive = true;
+    let rafId: number;
+
+    // Ball moves at a constant speed, no increase in speed ever.
+    const ball = { x: 53, y: 200, vx: 5, vy: 3.5, r: 8 };
+    const paddleW = 15;
+    const paddleH = 80;
+    const paddleX = 30;
+    let hitCount = 0;
+
+    const loop = (): void => {
+      if (!alive) return;
+      if (showQuitConfirmRef.current) {
+        rafId = requestAnimationFrame(loop);
+        return;
+      }
+
+      // Inverted slider mapping: moving the controller UP now moves the paddle UP
+      const paddleY = (1 - pongSliderValRef.current / 100) * (CANVAS_H - paddleH);
+
+      if (!pongStartedRef.current) {
+        // Keep ball attached to the paddle center vertically until launch
+        ball.x = paddleX + paddleW + ball.r;
+        ball.y = paddleY + paddleH / 2;
+      } else {
+        // Update physics
+        ball.x += ball.vx;
+        ball.y += ball.vy;
+
+        // Boundary top/bottom bounce
+        if (ball.y - ball.r <= 0) {
+          ball.y = ball.r;
+          ball.vy = -ball.vy;
+        } else if (ball.y + ball.r >= CANVAS_H) {
+          ball.y = CANVAS_H - ball.r;
+          ball.vy = -ball.vy;
+        }
+
+        // Right wall solid bounce (constant velocity components)
+        if (ball.x + ball.r >= CANVAS_W) {
+          ball.x = CANVAS_W - ball.r;
+          ball.vx = -ball.vx;
+        }
+
+        // Left paddle intersection
+        const isAtPaddleX = ball.x - ball.r <= paddleX + paddleW && ball.x + ball.r >= paddleX;
+        
+        if (ball.vx < 0 && isAtPaddleX) {
+          if (ball.y >= paddleY && ball.y <= paddleY + paddleH) {
+            ball.vx = -ball.vx;
+            hitCount += 1;
+            setPongScore(hitCount);
+            setStage4Fails(prev => prev + 1);
+            // Pong skip/pity check removed, allowing infinite bounces
+          }
+        }
+
+        // Off-screen (Left side exit is the goal!)
+        if (ball.x - ball.r < 0) {
+          alive = false;
+          setPongPassed(true);
+          pongTimerRef.current = setTimeout(() => {
+            setCompletedStage(4);
+          }, 5000); // Custom overlay displays for exactly 5 seconds
+          return;
+        }
+      }
+
+      // Draw frames
+      ctx.fillStyle = '#000000';
+      ctx.fillRect(0, 0, CANVAS_W, CANVAS_H);
+
+      // Draw Left Paddle
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(paddleX, paddleY, paddleW, paddleH);
+
+      // Draw Ball
+      ctx.beginPath();
+      ctx.arc(ball.x, ball.y, ball.r, 0, Math.PI * 2);
+      ctx.fill();
+
+      rafId = requestAnimationFrame(loop);
+    };
+
+    rafId = requestAnimationFrame(loop);
+
+    return () => {
+      alive = false;
+      cancelAnimationFrame(rafId);
+      if (pongTimerRef.current) {
+        clearTimeout(pongTimerRef.current);
+      }
+    };
+  }, [stage, completedStage]);
+
+  const handlePongStart = () => {
+    if (showQuitConfirmRef.current) return;
+    if (!pongStarted) {
+      setPongStarted(true);
+      pongStartedRef.current = true;
+    }
+  };
+
+  /* ════════════════════════════════════════════════════════════════════════
+     STAGE 5 — Deceptive Crossword Selection & Transition
+     ════════════════════════════════════════════════════════════════════════ */
+  const handleMouseDown = (r: number, c: number) => {
+    if (showQuitConfirmRef.current) return;
+    tap();
+    setIsSelecting(true);
+    setSelectStart({ r, c });
+    setHighlightedCells([{ r, c }]);
+  };
+
+  const handleMouseEnter = (r: number, c: number) => {
+    if (showQuitConfirmRef.current) return;
+    if (!isSelecting || !selectStart) return;
+    
+    const rStart = selectStart.r;
+    const cStart = selectStart.c;
+    const rEnd = r;
+    const cEnd = c;
+
+    const rDiff = rEnd - rStart;
+    const cDiff = cEnd - cStart;
+
+    const absRDiff = Math.abs(rDiff);
+    const absCDiff = Math.abs(cDiff);
+
+    const path: { r: number, c: number }[] = [];
+
+    if (rStart === rEnd) {
+      // Horizontal selection
+      const minC = Math.min(cStart, cEnd);
+      const maxC = Math.max(cStart, cEnd);
+      for (let i = minC; i <= maxC; i++) {
+        path.push({ r: rStart, c: i });
+      }
+    } else if (cStart === cEnd) {
+      // Vertical selection
+      const minR = Math.min(rStart, rEnd);
+      const maxR = Math.max(rStart, rEnd);
+      for (let i = minR; i <= maxR; i++) {
+        path.push({ r: i, c: cStart });
+      }
+    } else if (absRDiff === absCDiff) {
+      // Diagonal selection
+      const rStep = rDiff > 0 ? 1 : -1;
+      const cStep = cDiff > 0 ? 1 : -1;
+      for (let i = 0; i <= absRDiff; i++) {
+        path.push({ r: rStart + i * rStep, c: cStart + i * cStep });
+      }
+    }
+
+    if (path.length > 0) {
+      setHighlightedCells(path);
+    }
+  };
+
+  const handleMouseUp = () => {
+    if (showQuitConfirmRef.current) {
+      setIsSelecting(false);
+      setSelectStart(null);
+      setHighlightedCells([]);
+      return;
+    }
+    if (isSelecting) {
+      setIsSelecting(false);
+      if (highlightedCells.length > 0) {
+        setCrosswordError(true);
+        setCrosswordFails(f => f + 1);
+      }
+      setSelectStart(null);
+      setHighlightedCells([]);
+    }
+  };
+
+  // Error popup for Invalid Word stays on screen for exactly 1.5 seconds
+  useEffect(() => {
+    if (!crosswordError) return;
+    const timer = setTimeout(() => {
+      setCrosswordError(false);
+    }, 1500); 
+    return () => clearTimeout(timer);
+  }, [crosswordError]);
+
+  // Global mouse release handling to ensure selections reset cleanly
+  useEffect(() => {
+    if (!isSelecting) return;
+    const handleGlobalMouseUp = () => {
+      if (showQuitConfirmRef.current) {
+        setIsSelecting(false);
+        setSelectStart(null);
+        setHighlightedCells([]);
+        return;
+      }
+      setIsSelecting(false);
+      if (highlightedCells.length > 0) {
+        setCrosswordError(true);
+        setCrosswordFails(f => f + 1);
+      }
+      setSelectStart(null);
+      setHighlightedCells([]);
+    };
+    window.addEventListener('mouseup', handleGlobalMouseUp);
+    return () => window.removeEventListener('mouseup', handleGlobalMouseUp);
+  }, [isSelecting, highlightedCells]);
+
+  // Next Arrow slowly fading in: hidden for first 15s, starts showing at 15s and reaches full opacity by 60s
+  useEffect(() => {
+    if (stage !== 5) return;
+    // Render button in DOM after 15 seconds (making it immediately clickable)
+    const showTimer = setTimeout(() => {
+      setArrowVisible(true);
+      // Trigger linear opacity transition
+      const opacityTimer = setTimeout(() => {
+        setArrowOpacity(true);
+      }, 50);
+      return () => clearTimeout(opacityTimer);
+    }, 15000); 
+
+    return () => {
+      clearTimeout(showTimer);
+      setArrowVisible(false);
+      setArrowOpacity(false);
+    };
+  }, [stage]);
+
+  const handleNextArrowClick = (): void => {
+    if (showQuitConfirmRef.current) return;
+    tap();
+    playAudioFile(DUMMY_AUDIO);
+    setCrosswordNextPopupActive(true);
+    pityTimerRef.current = setTimeout(() => {
+      setCrosswordNextPopupActive(false);
+      setCompletedStage(5);
+    }, 5000); // 5-second themed popup
+  };
+
+  /* ════════════════════════════════════════════════════════════════════════
+     STAGE 6 — The Fake Leaderboard
+     ════════════════════════════════════════════════════════════════════════ */
+  useEffect(() => {
+    if (stage !== 6) return;
 
     const canvas = confettiRef.current;
     if (!canvas) return;
@@ -318,65 +865,155 @@ const SisyphusSuite: React.FC = () => {
       cancelAnimationFrame(raf);
       window.removeEventListener('resize', resize);
     };
-  }, [stage]);
+  }, [stage, completedStage]);
 
-  /* ════════════════════════════════════════════════════════════════════════
-     STAGE 4 → 5  Submit handler
-     ════════════════════════════════════════════════════════════════════════ */
   const handleSubmit = (): void => {
     tap();
     const name    = nameInput.trim() || 'Anonymous';
     const elapsed = startTs.current ? Math.floor((Date.now() - startTs.current) / 1000) : 0;
-    // Capture values before React batches the setStage re-render
     setSavedName(name);
     setFinalTime({ m: Math.floor(elapsed / 60), s: elapsed % 60 });
-    setFinalClicks(clicks + 1); // +1 for this click (tap() is async)
-    setStage(5);
+    setFinalFails(stage1Fails + misses + stage3Fails + stage4Fails + crosswordFails);
+    setStage(7);
   };
 
+  const quitConfirmPopup = showQuitConfirm && (
+    <div className="fixed inset-0 bg-black/80 backdrop-blur-md flex items-center justify-center z-[100] select-none font-sans">
+      <div className="max-w-md w-full mx-4 border-double border-8 border-amber-600 bg-zinc-950 p-8 text-center rounded-xl shadow-2xl font-serif text-amber-100 relative">
+        <h3 className="text-2xl font-bold tracking-wide mb-4">
+          Are you sure you want to quit?
+        </h3>
+        <p className="text-zinc-400 text-sm mb-8 font-sans">
+          All progress for the current run will be lost.
+        </p>
+        <div className="flex gap-4 justify-center">
+          <button
+            onClick={() => {
+              setShowQuitConfirm(false);
+              handleQuit();
+            }}
+            className="px-6 py-2.5 bg-red-655/90 hover:bg-red-600 text-white font-bold tracking-wider text-xs uppercase cursor-pointer transition-all duration-300 rounded-lg shadow-md border border-red-750 bg-red-600"
+          >
+            Yes, Quit
+          </button>
+          <button
+            onClick={() => {
+              setShowQuitConfirm(false);
+            }}
+            className="px-6 py-2.5 bg-transparent border border-zinc-500 hover:bg-zinc-800 text-zinc-300 font-bold tracking-wider text-xs uppercase cursor-pointer transition-all duration-300 rounded-lg"
+          >
+            No, Continue
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+
   /* ════════════════════════════════════════════════════════════════════════
-     RENDER
+     RENDER STAGE SWITCH
      ════════════════════════════════════════════════════════════════════════ */
 
-  /* ── Stage 0: The Landing Page ─────────────────────────────────────────── */
+  /* ── INTERMISSION SCREEN (Matches Home Screen and Stage 7 perfectly) ── */
+  if (completedStage !== null) return (
+    <div className="min-h-screen bg-white flex items-center justify-center p-6 text-amber-900 font-serif selection:bg-amber-100 relative select-none">
+      {/* Big Golden Border near the edge of the screen */}
+      <div className="absolute inset-4 sm:inset-6 md:inset-10 border-double border-8 border-amber-600 bg-white pointer-events-none z-0" />
+
+      <div className="max-w-xl w-full px-8 py-12 text-center relative z-10 flex flex-col items-center">
+        <div className="text-amber-600/30 text-4xl font-bold mb-4">₪</div>
+        <p className="tracking-[0.45em] uppercase text-amber-700 text-xs mb-6 font-bold">
+          Level {completedStage} Completed
+        </p>
+        <h1 className="text-3xl md:text-4xl font-light tracking-[0.18em] text-amber-800 my-6 uppercase">
+          Boulder Repositioned
+        </h1>
+        <div className="w-16 h-[2px] bg-amber-600 mx-auto mb-8" />
+        <p className="text-slate-700 text-base md:text-lg leading-relaxed mb-12 italic">
+          "One must imagine Sisyphus happy."<br />
+          The labor is complete, yet the mountain remains.
+        </p>
+        
+        <div className="flex flex-col sm:flex-row gap-4 justify-center items-center w-full max-w-md">
+          <button
+            onClick={() => {
+              const next = completedStage + 1;
+              setStage(next as Stage);
+              setCompletedStage(null);
+            }}
+            className="px-8 py-3.5 w-full bg-amber-600 hover:bg-amber-500 text-white font-bold tracking-widest text-xs uppercase cursor-pointer transition-all duration-300 shadow-md hover:shadow-lg rounded-lg border-2 border-amber-650"
+          >
+            Next Level
+          </button>
+          <button
+            onClick={() => {
+              // Reset specific states for the stage to retry (failed attempts accumulate)
+              if (completedStage === 1) {
+                setSliderVal(0);
+              } else if (completedStage === 2) {
+                setBtnPos({
+                  x: (window.innerWidth - BTN_W) / 2,
+                  y: (window.innerHeight - BTN_H) / 2,
+                });
+              } else if (completedStage === 3) {
+                setCdDisplay(5);
+                setHasStarted(false);
+                setHasFailed(false);
+              } else if (completedStage === 4) {
+                setPongScore(0);
+                setPongSliderVal(50);
+                pongSliderValRef.current = 50;
+                setPongStarted(false);
+                pongStartedRef.current = false;
+                setPongPassed(false);
+              } else if (completedStage === 5) {
+                setIsSelecting(false);
+                setSelectStart(null);
+                setHighlightedCells([]);
+                setCrosswordError(false);
+                setArrowVisible(false);
+                setArrowOpacity(false);
+              }
+              setStage(completedStage as Stage);
+              setCompletedStage(null);
+            }}
+            className="px-8 py-3.5 w-full bg-transparent border-2 border-amber-600 text-amber-800 hover:bg-amber-900/10 tracking-widest text-xs uppercase cursor-pointer transition-all duration-300 rounded-lg font-bold"
+          >
+            Retry Level
+          </button>
+          <button
+            onClick={() => setShowQuitConfirm(true)}
+            className="px-8 py-3.5 w-full bg-transparent border-2 border-amber-800 text-amber-600 hover:text-amber-500 hover:border-amber-600 tracking-widest text-xs uppercase cursor-pointer transition-all duration-300 rounded-lg font-bold"
+          >
+            Home
+          </button>
+        </div>
+      </div>
+      {quitConfirmPopup}
+    </div>
+  );
+
+  /* ── Stage 0: The Greek Home Screen (White Background + Edge Golden Border) ── */
   if (stage === 0) return (
-    <div style={{ minHeight: '100vh', background: '#ffffff', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-      <div style={{ textAlign: 'center', maxWidth: 540, padding: '0 24px' }}>
-        <p style={{
-          letterSpacing: '0.45em', textTransform: 'uppercase',
-          color: '#9ca3af', fontSize: '0.68rem',
-          marginBottom: '2rem', fontFamily: 'Georgia, serif',
-        }}>
+    <div className="min-h-screen bg-white flex items-center justify-center p-6 text-amber-900 font-serif selection:bg-amber-100 relative">
+      {/* Big Golden Border near the edge of the screen */}
+      <div className="absolute inset-4 sm:inset-6 md:inset-10 border-double border-8 border-amber-600 bg-white pointer-events-none z-0" />
+
+      <div className="max-w-xl w-full px-8 py-12 text-center relative z-10">
+        <p className="tracking-[0.45em] uppercase text-amber-650 text-xs mb-8 font-bold text-amber-650">
           A Gloriously Useless Experience
         </p>
-        <h1 style={{
-          fontFamily: 'Georgia, "Times New Roman", serif',
-          fontSize: '2.5rem', fontWeight: 300,
-          letterSpacing: '0.18em', color: '#111827',
-          margin: '0 0 1.5rem',
-        }}>
+        <h1 className="text-4xl md:text-5xl lg:text-6xl font-light tracking-[0.18em] text-amber-800 my-8 uppercase">
           The Sisyphus Suite
         </h1>
-        <div style={{ width: 48, height: 1, background: '#e5e7eb', margin: '0 auto 2.5rem' }} />
-        <p style={{
-          fontFamily: 'Georgia, serif', color: '#6b7280',
-          fontSize: '1rem', lineHeight: 1.9, margin: '0 0 3.5rem',
-        }}>
+        <div className="w-16 h-[2px] bg-amber-600 mx-auto my-8" />
+        <p className="text-slate-655 text-base md:text-lg leading-relaxed mb-12 text-slate-600">
           Embark on a journey of focus, precision, and ultimate reward.<br />
           Do you have what it takes to conquer the challenges ahead?<br />
           Press Begin.
         </p>
         <button
           onClick={handleBegin}
-          style={{
-            padding: '1rem 4.5rem', background: 'transparent',
-            border: '1px solid #d1d5db', color: '#4b5563',
-            letterSpacing: '0.35em', fontSize: '0.78rem',
-            textTransform: 'uppercase', fontFamily: 'Georgia, serif',
-            cursor: 'pointer', transition: 'all 0.25s',
-          }}
-          onMouseEnter={e => { (e.currentTarget as HTMLButtonElement).style.background = '#f9fafb'; }}
-          onMouseLeave={e => { (e.currentTarget as HTMLButtonElement).style.background = 'transparent'; }}
+          className="px-16 py-4 bg-transparent border-2 border-amber-600 text-amber-800 hover:text-white hover:bg-amber-600 tracking-[0.35em] text-sm uppercase cursor-pointer transition-all duration-300 shadow-[0_0_15px_rgba(217,119,6,0.1)] font-bold hover:shadow-[0_0_25px_rgba(217,119,6,0.3)]"
         >
           Begin
         </button>
@@ -386,231 +1023,474 @@ const SisyphusSuite: React.FC = () => {
 
   /* ── Stage 1: The Unforgiving Slider ───────────────────────────────────── */
   if (stage === 1) return (
-    <div style={{
-      minHeight: '100vh', background: '#d1d5db',
-      display: 'flex', flexDirection: 'column',
-      alignItems: 'center', justifyContent: 'center',
-      gap: '2.5rem', padding: '0 24px',
-    }}>
-      <p style={{ color: '#374151', fontSize: '1.1rem', textAlign: 'center', lineHeight: 1.9, margin: 0 }}>
-        To proceed, calibrate your focus.<br />
-        Set the slider to exactly{' '}
-        <code style={{ fontFamily: 'monospace', fontWeight: 700, color: '#111827', background: '#e5e7eb', padding: '2px 6px', borderRadius: 4 }}>
-          50.00
-        </code>.
-      </p>
-      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '1.5rem', width: 300 }}>
-        <span style={{
-          fontFamily: 'monospace', fontSize: '3.75rem',
-          fontWeight: 700, color: '#111827',
-          fontVariantNumeric: 'tabular-nums',
-          transition: 'color 0.1s',
-          color: sliderVal === 50 ? '#16a34a' : '#111827',
-        }}>
-          {sliderVal.toFixed(2)}
-        </span>
-        <input
-          type="range"
-          min="0" max="100" step="0.01"
-          value={sliderVal}
-          onChange={e => setSliderVal(parseFloat(e.target.value))}
-          onMouseUp={handleSliderRelease}
-          onTouchEnd={handleSliderRelease}
-          style={{ width: '100%', cursor: 'ew-resize', accentColor: '#111827' }}
-        />
-        <p style={{ color: '#6b7280', fontSize: '0.85rem', margin: 0 }}>
-          Release the slider to submit your answer.
-        </p>
+    <div className="min-h-screen bg-slate-955 text-slate-100 flex flex-col items-center justify-center gap-8 px-6 font-sans relative select-none bg-slate-950">
+      {/* Title */}
+      <div className="absolute top-6 left-1/2 -translate-x-1/2 text-center w-full px-4">
+        <h2 className="text-xl md:text-2xl font-bold tracking-widest text-amber-400 uppercase font-sans">
+          STAGE 1: THE UNFORGIVING SLIDER
+        </h2>
       </div>
+
+      {/* Quit button always turns red when hovered over */}
+      <button
+        onClick={() => setShowQuitConfirm(true)}
+        className="absolute top-6 right-6 text-sm tracking-widest uppercase bg-slate-900 hover:bg-red-600 text-slate-100 hover:text-white px-6 py-2.5 rounded-lg border border-slate-700 hover:border-red-600 transition-all font-bold z-50 shadow-lg hover:scale-105 active:scale-95"
+      >
+        Quit
+      </button>
+      
+      <div className="max-w-md w-full bg-slate-900 border border-slate-800 rounded-xl p-8 shadow-2xl flex flex-col items-center gap-6">
+        <p className="text-slate-200 text-base md:text-lg font-bold text-center leading-relaxed">
+          To proceed, calibrate your focus.<br />
+          Set the slider to exactly <code className="font-mono font-bold text-amber-400 bg-slate-955 px-2 py-1 rounded bg-slate-950">50.00</code>.
+        </p>
+        
+        <div className="flex flex-col items-center gap-4 w-full">
+          <span className={`font-mono text-6xl font-bold tracking-tight select-none tabular-nums transition-colors duration-150 ${sliderVal === 50 ? 'text-emerald-400 drop-shadow-[0_0_15px_rgba(52,211,153,0.3)]' : 'text-slate-200'}`}>
+            {sliderVal.toFixed(2)}
+          </span>
+          
+          <input
+            type="range"
+            min="0"
+            max="100"
+            step="0.01"
+            value={sliderVal}
+            onChange={e => setSliderVal(parseFloat(e.target.value))}
+            onMouseUp={handleSliderRelease}
+            onTouchEnd={handleSliderRelease}
+            className="w-full h-2 bg-slate-955 rounded-lg appearance-none cursor-ew-resize accent-amber-500 hover:accent-amber-400 focus:outline-none bg-slate-950"
+          />
+          
+          <p className="text-slate-500 text-xs text-center mt-2">
+            Release the slider to submit your calibration.
+          </p>
+        </div>
+
+        {stage1Fails > 0 && (
+          <p className="text-slate-400 font-sans text-base font-bold text-center mt-4">
+            Failed attempts: {stage1Fails}
+          </p>
+        )}
+      </div>
+
+      {/* Stage 1 In-game pity popup (5 seconds display duration) */}
+      {stage1PityActive && (
+        <div className="absolute inset-0 bg-black/90 flex items-center justify-center z-50 select-none">
+          <div className="max-w-md w-full mx-4 border-double border-8 border-amber-600 bg-zinc-955 p-8 text-center rounded-xl shadow-2xl font-serif text-amber-100 animate-pulse bg-zinc-950">
+            <p className="text-lg leading-relaxed font-bold">
+              Alright I Dont Have All Day And It Aint Looking Good So Lets Get A Move On Shall We...
+            </p>
+          </div>
+        </div>
+      )}
+      {quitConfirmPopup}
     </div>
   );
 
   /* ── Stage 2: The Evasive Button ───────────────────────────────────────── */
   if (stage === 2) return (
-    <div style={{ minHeight: '100vh', background: '#FCD34D', position: 'relative', overflow: 'hidden' }}>
+    <div className="min-h-screen bg-yellow-400 relative overflow-hidden flex items-center justify-center select-none">
+      {/* Title */}
+      <div className="absolute top-6 left-1/2 -translate-x-1/2 text-center w-full px-4">
+        <h2 className="text-xl md:text-2xl font-bold tracking-widest text-yellow-950 uppercase font-sans">
+          STAGE 2: THE EVASIVE BUTTON
+        </h2>
+      </div>
+
+      {/* Quit button always turns red when hovered over */}
+      <button
+        onClick={() => setShowQuitConfirm(true)}
+        className="absolute top-6 right-6 text-sm tracking-widest uppercase bg-slate-900 hover:bg-red-600 text-slate-100 hover:text-white px-6 py-2.5 rounded-lg border border-slate-700 hover:border-red-600 transition-all font-bold z-50 shadow-lg hover:scale-105 active:scale-95"
+      >
+        Quit
+      </button>
+
       <button
         style={{
           position: 'fixed',
-          left: btnPos.x, top: btnPos.y,
-          width: BTN_W, height: BTN_H,
-          background: '#DC2626', color: '#ffffff',
-          border: 'none', borderRadius: 6,
-          fontSize: 15, fontWeight: 700,
-          cursor: 'pointer', zIndex: 10,
-          letterSpacing: '0.03em',
-          userSelect: 'none',
-          boxShadow: '0 4px 14px rgba(0,0,0,0.3)',
+          left: btnPos.x,
+          top: btnPos.y,
+          width: BTN_W,
+          height: BTN_H,
         }}
+        className="bg-red-600 hover:bg-red-700 text-white font-bold text-base rounded-lg border-2 border-red-800 shadow-[0_6px_20px_rgba(220,38,38,0.4)] transition-all cursor-pointer z-10 active:translate-y-1"
         onMouseEnter={evadeButton}
-        onClick={() => { tap(); setStage(3); }}
+        onClick={() => { tap(); setCompletedStage(2); }}
       >
-        Confirm Calibration
+        Catch Me If You Can!
       </button>
-      <p style={{
-        position: 'fixed', bottom: 28,
-        left: 0, right: 0, textAlign: 'center',
-        fontFamily: 'monospace', color: '#92400e', fontSize: 16, margin: 0,
-      }}>
-        Failed attempts: {misses}
-      </p>
+      
+      <div className="absolute bottom-10 left-0 right-0 text-center flex flex-col gap-1 items-center z-0">
+        <p className="text-yellow-955 font-sans text-xl font-bold">
+          Failed attempts: {misses}
+        </p>
+        <p className="text-yellow-955 text-sm md:text-base font-bold font-sans mt-2 opacity-85 text-yellow-950">
+          Click to win.
+        </p>
+      </div>
+
+      {/* Stage 2 In-game pity popup (5 seconds display duration) */}
+      {stage2PityActive && (
+        <div className="absolute inset-0 bg-black/90 flex items-center justify-center z-50 select-none">
+          <div className="max-w-md w-full mx-4 border-double border-8 border-amber-600 bg-zinc-955 p-8 text-center rounded-xl shadow-2xl font-serif text-amber-100 animate-pulse bg-zinc-950">
+            <p className="text-lg leading-relaxed font-bold">
+              Alright I Dont Have All Day And It Aint Looking Good So Lets Get A Move On Shall We...
+            </p>
+          </div>
+        </div>
+      )}
+      {quitConfirmPopup}
     </div>
   );
 
   /* ── Stage 3: Invisible Flappy Bird ────────────────────────────────────── */
   if (stage === 3) return (
-    <div style={{
-      minHeight: '100vh', background: '#000000',
-      display: 'flex', flexDirection: 'column',
-      alignItems: 'center', justifyContent: 'center',
-      gap: '1.25rem', padding: '0 16px',
-    }}>
-      <p style={{ color: '#f3f4f6', fontSize: '1rem', textAlign: 'center', margin: 0 }}>
-        Survive{' '}
-        <span style={{ color: '#FCD34D', fontWeight: 700 }}>5 seconds</span>
-        {' '}to unlock your reward.{' '}
-        Press{' '}
-        <kbd style={{
-          background: '#1f2937', color: '#e5e7eb',
-          padding: '2px 8px', borderRadius: 4,
-          border: '1px solid #374151', fontSize: '0.85rem',
-        }}>
-          Space
-        </kbd>
-        {' '}to flap.
+    <div className="min-h-screen bg-black flex flex-col items-center justify-center gap-6 px-4 relative select-none">
+      {/* Title */}
+      <div className="absolute top-6 left-1/2 -translate-x-1/2 text-center w-full px-4">
+        <h2 className="text-xl md:text-2xl font-bold tracking-widest text-zinc-300 uppercase font-sans">
+          STAGE 3: INVISIBLE FLAPPY BIRD
+        </h2>
+      </div>
+
+      {/* Quit button always turns red when hovered over */}
+      <button
+        onClick={() => setShowQuitConfirm(true)}
+        className="absolute top-6 right-6 text-sm tracking-widest uppercase bg-slate-900 hover:bg-red-600 text-slate-100 hover:text-white px-6 py-2.5 rounded-lg border border-slate-700 hover:border-red-600 transition-all font-bold z-50 shadow-lg hover:scale-105 active:scale-95"
+      >
+        Quit
+      </button>
+
+      <p className="text-zinc-100 text-lg md:text-xl font-bold text-center max-w-md leading-relaxed font-sans mt-12">
+        Survive <span className="text-amber-400 font-bold">5 seconds</span> to move on to the next level.<br />
+        Press <kbd className="bg-zinc-800 text-zinc-100 px-2 py-1 rounded border border-zinc-700 text-sm font-mono">Space</kbd> or click the screen to flap.
       </p>
 
-      <div style={{ height: 38, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+      <div className="h-10 flex items-center justify-center font-sans">
         {hasFailed ? (
-          <p style={{ color: '#ef4444', fontWeight: 700, fontSize: '1.2rem', margin: 0 }}>
+          <p className="text-red-500 font-bold text-xl tracking-wider animate-pulse">
             FAILED. RESTARTING LEAP.
           </p>
         ) : hasStarted ? (
-          <p style={{ color: '#FCD34D', fontFamily: 'monospace', fontSize: '1.2rem', margin: 0 }}>
+          <p className="text-amber-400 font-mono text-xl font-bold">
             {cdDisplay}s remaining
           </p>
         ) : (
-          <p style={{ color: '#4b5563', fontSize: '0.875rem', margin: 0 }}>
-            Click the canvas or press Space to begin
+          <p className="text-zinc-500 text-sm">
+            Click or press Space to begin
           </p>
         )}
       </div>
 
-      <canvas
-        ref={canvasRef}
-        width={CANVAS_W}
-        height={CANVAS_H}
-        tabIndex={0}
-        style={{
-          border: '1px solid #1f2937',
-          maxWidth: '100%',
-          cursor: 'pointer',
-          outline: 'none',
-          display: 'block',
-        }}
-      />
-    </div>
-  );
-
-  /* ── Stage 4: The Fake Leaderboard ─────────────────────────────────────── */
-  if (stage === 4) return (
-    <div style={{
-      minHeight: '100vh', background: '#fffbeb',
-      position: 'relative',
-      display: 'flex', alignItems: 'center', justifyContent: 'center',
-    }}>
-      {/* Confetti canvas */}
-      <canvas
-        ref={confettiRef}
-        style={{
-          position: 'fixed', inset: 0,
-          width: '100%', height: '100%',
-          pointerEvents: 'none', zIndex: 0,
-        }}
-      />
-
-      {/* Trophy box */}
-      <div style={{
-        position: 'relative', zIndex: 10,
-        background: '#FCD34D',
-        border: '4px solid #F59E0B',
-        borderRadius: 20,
-        padding: '3rem 2.5rem',
-        maxWidth: 440, width: '100%',
-        textAlign: 'center',
-        boxShadow: '0 25px 50px -12px rgba(0,0,0,0.3)',
-      }}>
-        <div style={{ fontSize: '4rem', lineHeight: 1, marginBottom: '0.5rem' }}>🏆</div>
-        <h1 style={{
-          fontFamily: 'system-ui, sans-serif',
-          fontSize: '2.5rem', fontWeight: 900,
-          color: '#78350f', margin: '0 0 0.25rem',
-        }}>
-          YOU WIN!
-        </h1>
-        <p style={{
-          color: '#92400e', fontSize: '1.1rem',
-          fontWeight: 600, margin: '0 0 2rem',
-        }}>
-          Phenomenal performance.
-        </p>
-        <input
-          type="text"
-          value={nameInput}
-          onChange={e => setNameInput(e.target.value)}
-          onKeyDown={e => e.key === 'Enter' && handleSubmit()}
-          placeholder="Enter username for Global Leaderboard"
+      <div className="relative w-full max-w-[640px] aspect-[8/5] border border-zinc-800 bg-zinc-955 shadow-2xl overflow-hidden bg-zinc-950">
+        <canvas
+          ref={canvasRef}
+          width={CANVAS_W}
+          height={CANVAS_H}
+          tabIndex={0}
+          className="w-full h-full cursor-pointer outline-none block"
+        />
+        {/* Bird Avatar is visible at all times */}
+        <img
+          ref={birdImgRef}
+          src={BIRD_AVATAR}
+          alt="Bird"
+          className="absolute pointer-events-none"
           style={{
-            width: '100%', padding: '0.75rem 1rem',
-            boxSizing: 'border-box',
-            border: '2px solid #F59E0B', borderRadius: 8,
-            fontSize: '0.9rem', textAlign: 'center',
-            background: '#fef9c3', color: '#374151',
-            outline: 'none', marginBottom: '0.75rem',
+            left: '12.5%',
+            width: '3.75%',
+            height: '6%',
+            top: '50%',
             display: 'block',
           }}
         />
-        <button
-          onClick={handleSubmit}
-          style={{
-            width: '100%', padding: '0.9rem',
-            background: '#78350f', color: '#fef3c7',
-            border: 'none', borderRadius: 8,
-            fontSize: '1.05rem', fontWeight: 900,
-            cursor: 'pointer', letterSpacing: '0.05em',
-            transition: 'background 0.2s',
-          }}
-          onMouseEnter={e => { (e.currentTarget as HTMLButtonElement).style.background = '#92400e'; }}
-          onMouseLeave={e => { (e.currentTarget as HTMLButtonElement).style.background = '#78350f'; }}
-        >
-          Submit to Global Leaderboard
-        </button>
       </div>
+
+      {stage3Fails > 0 && (
+        <p className="text-zinc-400 font-sans text-base font-bold mt-4">
+          Failed attempts: {stage3Fails}
+        </p>
+      )}
+
+      {/* Stage 3 In-game pity popup (5 seconds display duration) */}
+      {stage3PityActive && (
+        <div className="absolute inset-0 bg-black/90 flex items-center justify-center z-50 select-none">
+          <div className="max-w-md w-full mx-4 border-double border-8 border-amber-600 bg-zinc-955 p-8 text-center rounded-xl shadow-2xl font-serif text-amber-100 animate-pulse bg-zinc-950">
+            <p className="text-lg leading-relaxed font-bold">
+              Alright I Dont Have All Day And It Aint Looking Good So Lets Get A Move On Shall We...
+            </p>
+          </div>
+        </div>
+      )}
+      {quitConfirmPopup}
     </div>
   );
 
-  /* ── Stage 5: The Ultimate Betrayal ────────────────────────────────────── */
+  /* ── Stage 4: Slider Pong (Slider on Left, Behind the Board, Constant Speed) ── */
+  if (stage === 4) return (
+    <div className="min-h-screen bg-slate-955 text-slate-100 flex flex-col items-center justify-center gap-6 px-6 relative select-none font-sans bg-slate-955 bg-slate-950">
+      {/* Title */}
+      <div className="absolute top-6 left-1/2 -translate-x-1/2 text-center w-full px-4">
+        <h2 className="text-xl md:text-2xl font-bold tracking-widest text-slate-300 uppercase font-sans">
+          STAGE 4: PONG
+        </h2>
+      </div>
+
+      {/* Quit button always turns red when hovered over */}
+      <button
+        onClick={() => setShowQuitConfirm(true)}
+        className="absolute top-6 right-6 text-sm tracking-widest uppercase bg-slate-900 hover:bg-red-600 text-slate-100 hover:text-white px-6 py-2.5 rounded-lg border border-slate-700 hover:border-red-600 transition-all font-bold z-50 shadow-lg hover:scale-105 active:scale-95"
+      >
+        Quit
+      </button>
+
+      <div className="text-center flex flex-col items-center mt-12">
+        {/* Instructions text is larger and bold */}
+        <p className="text-slate-300 text-base font-bold mt-2 text-center uppercase tracking-wider">
+          {pongStarted ? "Protect the left boundary." : "Move the slider or click the board to launch the ball."}
+        </p>
+      </div>
+
+      <div className="flex items-center gap-6">
+        <div className="bg-slate-900 border border-slate-800 rounded-lg px-4 py-2 font-mono text-lg text-emerald-400 shadow-inner">
+          SCORE: <span className="font-bold">{pongScore}</span>
+        </div>
+      </div>
+
+      {/* Relative container holding both Left Vertical Slider and Pong Canvas */}
+      <div className="relative flex items-center justify-center pl-8">
+        
+        {/* Vertical range slider positioned on the left side, behind the board (z-0) */}
+        <input
+          type="range"
+          min="0"
+          max="100"
+          {...{ orient: "vertical" }}
+          value={pongSliderVal}
+          onChange={e => {
+            const val = parseFloat(e.target.value);
+            setPongSliderVal(val);
+            pongSliderValRef.current = val;
+            handlePongStart();
+          }}
+          style={{
+            writingMode: 'vertical-lr',
+            direction: 'rtl',
+            height: 400,
+            left: 0,
+            position: 'absolute',
+            zIndex: 0,
+          }}
+          className="w-8 appearance-none bg-slate-900 hover:bg-slate-850 rounded-lg cursor-ns-resize accent-slate-300 focus:outline-none border border-slate-800 py-1"
+        />
+
+        {/* Pong board Canvas */}
+        <div 
+          onClick={handlePongStart}
+          className="relative w-full max-w-[640px] aspect-[8/5] border border-slate-800 bg-black shadow-2xl rounded-md overflow-hidden cursor-pointer z-10 ml-8"
+        >
+          <canvas
+            ref={pongCanvasRef}
+            width={CANVAS_W}
+            height={CANVAS_H}
+            className="w-full h-full block"
+          />
+
+          {/* In-Game Popup for Stage 4 success (disappears in 5 seconds) */}
+          {pongPassed && (
+            <div className="absolute inset-0 bg-black/80 flex items-center justify-center z-30 transition-opacity duration-300">
+              <div className="bg-slate-900 border border-slate-700 px-8 py-6 rounded-xl text-center shadow-2xl animate-pulse">
+                <h3 className="text-2xl font-bold text-amber-400 tracking-wide font-serif">
+                  Took you long enough to figure that one out,<br />
+                  Sometimes You Lose The War To Win The Battle.<br />
+                  or something like that...
+                </h3>
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+
+      <div className="h-6" />
+      {quitConfirmPopup}
+    </div>
+  );
+
+  /* ── Stage 5: Deceptive Crossword (Selection drag, fading arrow) ───────── */
   if (stage === 5) return (
-    <div style={{
-      minHeight: '100vh', background: '#ffffff',
-      display: 'flex', alignItems: 'center', justifyContent: 'center',
-    }}>
-      <p style={{
-        fontFamily: 'Times New Roman, Times, serif',
-        fontSize: '12pt',
-        textAlign: 'center',
-        color: '#000000',
-        maxWidth: 480,
-        lineHeight: 2,
-        padding: '0 24px',
-        margin: 0,
-      }}>
-        You spent {finalTime.m} minutes and {finalTime.s} seconds doing this.{' '}
-        You clicked {finalClicks} times.{' '}
-        The prize was the realization of your own stubbornness.{' '}
-        There is no database.{' '}
-        {savedName} was not saved.{' '}
-        Please close the tab.
-      </p>
+    <div className="min-h-screen bg-slate-955 text-slate-100 flex flex-col items-center justify-center p-6 relative select-none font-sans bg-slate-955 bg-slate-955 bg-slate-955 bg-slate-950">
+      {/* Title */}
+      <div className="absolute top-6 left-1/2 -translate-x-1/2 text-center w-full px-4">
+        <h2 className="text-xl md:text-2xl font-bold tracking-widest text-slate-300 uppercase font-sans">
+          STAGE 5: CROSSWORD
+        </h2>
+      </div>
+
+      {/* Quit button always turns red when hovered over */}
+      <button
+        onClick={() => setShowQuitConfirm(true)}
+        className="absolute top-6 right-6 text-sm tracking-widest uppercase bg-slate-900 hover:bg-red-600 text-slate-100 hover:text-white px-6 py-2.5 rounded-lg border border-slate-700 hover:border-red-600 transition-all font-bold z-50 shadow-lg hover:scale-105 active:scale-95"
+      >
+        Quit
+      </button>
+
+      <div className="max-w-md w-full bg-slate-900 border border-slate-800 rounded-xl p-8 shadow-2xl flex flex-col items-center gap-6 relative mt-12">
+        {/* Headings - Both FIND and WORDS are the same color */}
+        <h2 className="text-xl md:text-2xl font-bold tracking-widest text-slate-300 uppercase text-center cursor-default">
+          FIND <span onClick={() => { tap(); setCompletedStage(5); }} className="cursor-pointer hover:underline decoration-dotted text-slate-300">WORDS</span>
+        </h2>
+
+        {/* Word Search Grid with click-and-drag selection */}
+        <div 
+          onMouseUp={handleMouseUp}
+          className="grid grid-cols-8 gap-1.5 bg-slate-955 p-3 rounded-lg border border-slate-800 bg-slate-950"
+        >
+          {crosswordGrid.map((row, rIdx) =>
+            row.map((char, cIdx) => {
+              const isHighlighted = highlightedCells.some(cell => cell.r === rIdx && cell.c === cIdx);
+              return (
+                <button
+                  key={`${rIdx}-${cIdx}`}
+                  onMouseDown={(e) => { e.preventDefault(); handleMouseDown(rIdx, cIdx); }}
+                  onMouseEnter={() => handleMouseEnter(rIdx, cIdx)}
+                  className={`w-9 h-9 flex items-center justify-center rounded font-mono text-base font-bold transition-all duration-150 select-none ${
+                    isHighlighted
+                      ? 'bg-amber-500 text-black shadow-[0_0_8px_rgba(245,158,11,0.5)] border border-amber-600'
+                      : 'bg-slate-900 hover:bg-slate-800 text-slate-300 border border-slate-800'
+                  }`}
+                >
+                  {char}
+                </button>
+              );
+            })
+          )}
+        </div>
+
+        {/* Instructions text is larger and bold */}
+        <p className="text-slate-200 text-sm md:text-base font-bold text-center leading-relaxed font-sans mt-2">
+          Locate and highlight all hidden keywords to complete calibration.
+        </p>
+
+        {/* In-Game Popup for Invalid Word selection (stays on screen for 3 seconds) */}
+        {crosswordError && (
+          <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 bg-red-655/90 text-white px-6 py-3 rounded-lg border border-red-800 shadow-2xl font-bold tracking-wide animate-pulse z-30 pointer-events-none bg-red-600">
+            Invalid Word
+          </div>
+        )}
+
+        {/* In-Game Popup for Next Arrow Click (stays on screen for 5 seconds) */}
+        {crosswordNextPopupActive && (
+          <div className="absolute inset-0 bg-black/90 flex items-center justify-center z-50 select-none">
+            <div className="max-w-md w-full mx-4 border-double border-8 border-amber-600 bg-zinc-955 p-8 text-center rounded-xl shadow-2xl font-serif text-amber-100 animate-pulse bg-zinc-950">
+              <p className="text-lg leading-relaxed font-bold">
+                You Could Have Done This The Whole Time You Know...
+              </p>
+            </div>
+          </div>
+        )}
+
+        {/* Slowly Fading Next Arrow (hides for first 15s, then transitions over 45s, immediately clickable) */}
+        {arrowVisible && (
+          <button
+            onClick={handleNextArrowClick}
+            style={{
+              transition: 'opacity 45s linear',
+            }}
+            className={`fixed right-8 md:right-16 top-1/2 -translate-y-1/2 bg-amber-500 hover:bg-amber-400 text-black p-4 rounded-full shadow-lg z-20 cursor-pointer pointer-events-auto transition-opacity ${
+              arrowOpacity ? 'opacity-100' : 'opacity-0'
+            }`}
+            title="Next Level"
+          >
+            <svg className="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="3" d="M9 5l7 7-7 7" />
+            </svg>
+          </button>
+        )}
+      </div>
+      {quitConfirmPopup}
+    </div>
+  );
+
+  /* ── Stage 6: The Fake Leaderboard ─────────────────────────────────────── */
+  if (stage === 6) return (
+    <div className="min-h-screen bg-amber-50 text-slate-800 flex items-center justify-center p-6 relative select-none font-sans overflow-hidden">
+      {/* Quit button always turns red when hovered over */}
+      <button
+        onClick={() => setShowQuitConfirm(true)}
+        className="absolute top-6 right-6 text-sm tracking-widest uppercase bg-slate-900 hover:bg-red-600 text-slate-100 hover:text-white px-6 py-2.5 rounded-lg border border-slate-700 hover:border-red-600 transition-all font-bold z-50 shadow-lg hover:scale-105 active:scale-95"
+      >
+        Quit
+      </button>
+
+      <canvas
+        ref={confettiRef}
+        className="fixed inset-0 w-full h-full pointer-events-none z-0"
+      />
+
+      <div className="relative z-10 bg-amber-300 border-4 border-amber-500 rounded-2xl p-8 max-w-sm w-full text-center shadow-2xl flex flex-col items-center gap-5">
+        <div className="text-6xl animate-bounce">🏆</div>
+        <div>
+          <h1 className="text-3xl font-extrabold text-amber-950 tracking-wide uppercase">
+            YOU WIN!
+          </h1>
+          <p className="text-amber-900 font-medium text-sm mt-1 font-sans">
+            Phenomenal performance.
+          </p>
+        </div>
+
+        <div className="w-full flex flex-col gap-3 mt-2">
+          <input
+            type="text"
+            value={nameInput}
+            onChange={e => setNameInput(e.target.value)}
+            onKeyDown={e => e.key === 'Enter' && handleSubmit()}
+            placeholder="Enter username for Global Leaderboard"
+            className="w-full px-4 py-3 rounded-lg border-2 border-amber-500 bg-amber-55 text-slate-800 font-medium text-center focus:outline-none focus:border-amber-600 transition-colors bg-amber-50"
+          />
+          <button
+            onClick={handleSubmit}
+            className="w-full py-3.5 bg-amber-950 hover:bg-amber-900 text-amber-100 font-extrabold text-base rounded-lg tracking-wider uppercase transition-colors shadow-md hover:shadow-lg active:scale-[0.98]"
+          >
+            Submit to Global Leaderboard
+          </button>
+        </div>
+      </div>
+      {quitConfirmPopup}
+    </div>
+  );
+
+  /* ── Stage 7: The Final Betrayal (Matches Home screen aesthetic perfectly) ── */
+  if (stage === 7) return (
+    <div className="min-h-screen bg-white flex items-center justify-center p-6 text-amber-900 font-serif selection:bg-amber-100 relative select-none">
+      {/* Big Golden Border near the edge of the screen */}
+      <div className="absolute inset-4 sm:inset-6 md:inset-10 border-double border-8 border-amber-600 bg-white pointer-events-none z-0" />
+
+      <div className="max-w-xl w-full px-8 py-12 text-center relative z-10 flex flex-col items-center">
+        <img
+          src={FINAL_IMAGE}
+          alt="Final Sisyphus"
+          className="max-w-md h-60 object-contain mb-8 rounded shadow-md border border-amber-200/50"
+        />
+        <p className="tracking-[0.45em] uppercase text-amber-700 text-xs mb-6 font-bold">
+          Labor Concluded
+        </p>
+        <div className="w-16 h-[2px] bg-amber-600 mx-auto mb-6" />
+        <p className="text-slate-700 text-base md:text-lg leading-loose max-w-lg mb-8 italic">
+          You spent {finalTime.m} minutes and {finalTime.s} seconds doing this.{' '}
+          You failed {finalFails} times overall across all levels.{' '}
+          The prize was the realization of your own stubbornness.{' '}
+          There is no database.{' '}
+          {savedName} was not saved.{' '}
+          Please close the tab.
+        </p>
+        <button
+          onClick={handleQuit}
+          className="px-12 py-3.5 bg-transparent border-2 border-amber-600 text-amber-800 hover:text-white hover:bg-amber-600 tracking-[0.35em] text-xs uppercase cursor-pointer transition-all duration-300 font-bold shadow-[0_0_15px_rgba(217,119,6,0.1)] hover:shadow-[0_0_25px_rgba(217,119,6,0.3)]"
+        >
+          Start Anew
+        </button>
+      </div>
     </div>
   );
 
