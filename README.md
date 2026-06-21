@@ -40,4 +40,4 @@ Built for speed, resilience, and maximum chaos within the 2-hour hackathon limit
 
 ## 🚀 To Play
 
-**Visit: ** 
+**Visit:**
