@@ -3,16 +3,30 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 /* ════════════════════════════════════════════════════════════════════════════
    ASSET CONFIGURATION
    ════════════════════════════════════════════════════════════════════════════ */
-const AUDIO_DIR = './assets/audio'; // Configure this to your audio folder path
-const IMAGE_DIR = './assets/images'; // Configure this to your images folder path
+const AUDIO_DIR = '/assets/audio'; // Configure this to your audio folder path
+const IMAGE_DIR = '/assets/images'; // Configure this to your images folder path
 
 const FAIL_AUDIO = `${AUDIO_DIR}/fail.mp3`;                 // Stage 1 Reset Audio
 const LAUGH_AUDIO = `${AUDIO_DIR}/laugh.mp3`;               // Stage 1 Reset Voice Laugh Audio
 const EVASIVE_INTERVAL_AUDIO = `${AUDIO_DIR}/interval.mp3`;   // Stage 2 Interval Audio
-const BIRD_AVATAR = `${IMAGE_DIR}/bird.png`;                 // Stage 3 Bird Avatar Image
+const BIRD_AVATAR = `${IMAGE_DIR}/flappy bird avatar.png`;               // Stage 3 Bird Avatar Image
 const CRASH_AUDIO = `${AUDIO_DIR}/crash.mp3`;               // Stage 3 Crash Audio
 const DUMMY_AUDIO = `${AUDIO_DIR}/dummy.mp3`;               // Stage 5 "DUMMY!" Audio
-const FINAL_IMAGE = `${IMAGE_DIR}/final.png`;               // Final Stage Top-Center Image
+
+// New asset integrations
+const END_SCREEN_LOOP_AUDIO = `${AUDIO_DIR}/Man Laughing.mp3`; // Looping audio on the end screen
+const FAIL_ALERT_AUDIO = `${AUDIO_DIR}/Child Laughing.mp3`;     // Failed attempts alert audio
+const END_SCREEN_LAUGH_GIF = `${IMAGE_DIR}/laughing guy gif.gif`;   // Laughing guy GIF on the end screen
+
+// Custom sizing and positioning controls
+const BIRD_AVATAR_WIDTH = '12%';     // Sizing relative to canvas wrapper
+const BIRD_AVATAR_HEIGHT = '19%';
+const BIRD_AVATAR_LEFT = '12.5%';      // Horizontal position
+const BIRD_AVATAR_TOP_INITIAL = '50%'; // Initial vertical percentage
+
+const END_GIF_WIDTH = '400px';         // End screen GIF width
+const END_GIF_HEIGHT = '240px';        // End screen GIF height
+const END_GIF_MARGIN_BOTTOM = '32px';   // Bottom spacing for the GIF
 
 const SHOW_FLAPPY_OBSTACLES = false; // Set to true to make obstacles (ceiling, floor, and moving columns) visible, or false to make them completely invisible
 
@@ -29,7 +43,7 @@ const FLAP_VY  = -9;
 const BTN_W    = 200;
 const BTN_H    = 52;
 
-const FLAPPY_OBSTACLE_GAP   = 100;
+const FLAPPY_OBSTACLE_GAP   = 150;
 const FLAPPY_OBSTACLE_SPEED = 4;
 const FLAPPY_OBSTACLE_WIDTH = 50;
 const FLAPPY_SPAWN_INTERVAL = 110;
@@ -55,6 +69,28 @@ const SisyphusSuite: React.FC = () => {
   const tap = useCallback(() => {}, []);
   const pityTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const stage3PityTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const endScreenAudioRef = useRef<HTMLAudioElement | null>(null);
+  const hasPlayedCrosswordAlertRef = useRef(false);
+
+  useEffect(() => {
+    if (stage === 7) {
+      const audio = new Audio(END_SCREEN_LOOP_AUDIO);
+      audio.loop = true;
+      audio.play().catch(() => { /* ignore */ });
+      endScreenAudioRef.current = audio;
+    } else {
+      if (endScreenAudioRef.current) {
+        endScreenAudioRef.current.pause();
+        endScreenAudioRef.current = null;
+      }
+    }
+    return () => {
+      if (endScreenAudioRef.current) {
+        endScreenAudioRef.current.pause();
+        endScreenAudioRef.current = null;
+      }
+    };
+  }, [stage]);
 
   /* ── Stage 1: Slider ───────────────────────────────────────────────────── */
   const [sliderVal, setSliderVal] = useState(0);
@@ -163,6 +199,7 @@ const SisyphusSuite: React.FC = () => {
     setCrosswordFails(0);
     setCrosswordNextPopupActive(false);
     setFinalFails(0);
+    hasPlayedCrosswordAlertRef.current = false;
     startTs.current = null;
 
     if (dummyTimeoutRef.current) {
@@ -277,7 +314,11 @@ const SisyphusSuite: React.FC = () => {
     const nextMisses = misses + 1;
     setMisses(nextMisses);
 
-    if (nextMisses >= 100) {
+    if (nextMisses % 20 === 0 && nextMisses > 0) {
+      playAudioFile(FAIL_ALERT_AUDIO);
+    }
+
+    if (nextMisses >= 80) {
       setStage2PityActive(true);
       pityTimerRef.current = setTimeout(() => {
         setStage2PityActive(false);
@@ -303,14 +344,14 @@ const SisyphusSuite: React.FC = () => {
   useEffect(() => {
     if (stage !== 3) return;
 
-    // Time-based pity timer of 45 seconds
+    // Time-based pity timer of 40 seconds
     stage3PityTimerRef.current = setTimeout(() => {
       setStage3PityActive(true);
       pityTimerRef.current = setTimeout(() => {
         setStage3PityActive(false);
         setStage(4);
       }, 5000);
-    }, 45000);
+    }, 40000);
 
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -504,6 +545,9 @@ const SisyphusSuite: React.FC = () => {
 
           setStage3Fails(prev => {
             const next = prev + 1;
+            if (next % 3 === 0 && next > 0) {
+              playAudioFile(FAIL_ALERT_AUDIO);
+            }
             if (next >= 50) {
               setStage3PityActive(true);
               pityTimerRef.current = setTimeout(() => {
@@ -803,6 +847,10 @@ const SisyphusSuite: React.FC = () => {
     if (showQuitConfirmRef.current) return;
     tap();
     playAudioFile(DUMMY_AUDIO);
+    if (!hasPlayedCrosswordAlertRef.current) {
+      playAudioFile(FAIL_ALERT_AUDIO);
+      hasPlayedCrosswordAlertRef.current = true;
+    }
     setCrosswordNextPopupActive(true);
     pityTimerRef.current = setTimeout(() => {
       setCrosswordNextPopupActive(false);
@@ -1031,13 +1079,18 @@ const SisyphusSuite: React.FC = () => {
         </h2>
       </div>
 
-      {/* Quit button always turns red when hovered over */}
-      <button
-        onClick={() => setShowQuitConfirm(true)}
-        className="absolute top-6 right-6 text-sm tracking-widest uppercase bg-slate-900 hover:bg-red-600 text-slate-100 hover:text-white px-6 py-2.5 rounded-lg border border-slate-700 hover:border-red-600 transition-all font-bold z-50 shadow-lg hover:scale-105 active:scale-95"
-      >
-        Quit
-      </button>
+      {/* Top right controls */}
+      <div className="absolute top-6 right-6 flex items-center gap-4 z-50">
+        <span className="text-slate-400 font-sans text-sm font-bold">
+          Failed attempts: {stage1Fails}
+        </span>
+        <button
+          onClick={() => setShowQuitConfirm(true)}
+          className="text-sm tracking-widest uppercase bg-slate-900 hover:bg-red-600 text-slate-100 hover:text-white px-6 py-2.5 rounded-lg border border-slate-700 hover:border-red-600 transition-all font-bold shadow-lg hover:scale-105 active:scale-95"
+        >
+          Quit
+        </button>
+      </div>
       
       <div className="max-w-md w-full bg-slate-900 border border-slate-800 rounded-xl p-8 shadow-2xl flex flex-col items-center gap-6">
         <p className="text-slate-200 text-base md:text-lg font-bold text-center leading-relaxed">
@@ -1066,12 +1119,6 @@ const SisyphusSuite: React.FC = () => {
             Release the slider to submit your calibration.
           </p>
         </div>
-
-        {stage1Fails > 0 && (
-          <p className="text-slate-400 font-sans text-base font-bold text-center mt-4">
-            Failed attempts: {stage1Fails}
-          </p>
-        )}
       </div>
 
       {/* Stage 1 In-game pity popup (5 seconds display duration) */}
@@ -1096,15 +1143,23 @@ const SisyphusSuite: React.FC = () => {
         <h2 className="text-xl md:text-2xl font-bold tracking-widest text-yellow-950 uppercase font-sans">
           STAGE 2: THE EVASIVE BUTTON
         </h2>
+        <p className="text-yellow-950 text-sm md:text-base font-bold font-sans mt-1.5 opacity-85">
+          Click to win.
+        </p>
       </div>
 
-      {/* Quit button always turns red when hovered over */}
-      <button
-        onClick={() => setShowQuitConfirm(true)}
-        className="absolute top-6 right-6 text-sm tracking-widest uppercase bg-slate-900 hover:bg-red-600 text-slate-100 hover:text-white px-6 py-2.5 rounded-lg border border-slate-700 hover:border-red-600 transition-all font-bold z-50 shadow-lg hover:scale-105 active:scale-95"
-      >
-        Quit
-      </button>
+      {/* Top right controls */}
+      <div className="absolute top-6 right-6 flex items-center gap-4 z-50">
+        <span className="text-yellow-950 font-sans text-sm font-bold">
+          Failed attempts: {misses}
+        </span>
+        <button
+          onClick={() => setShowQuitConfirm(true)}
+          className="text-sm tracking-widest uppercase bg-slate-900 hover:bg-red-600 text-slate-100 hover:text-white px-6 py-2.5 rounded-lg border border-slate-700 hover:border-red-600 transition-all font-bold shadow-lg hover:scale-105 active:scale-95"
+        >
+          Quit
+        </button>
+      </div>
 
       <button
         style={{
@@ -1120,15 +1175,7 @@ const SisyphusSuite: React.FC = () => {
       >
         Catch Me If You Can!
       </button>
-      
-      <div className="absolute bottom-10 left-0 right-0 text-center flex flex-col gap-1 items-center z-0">
-        <p className="text-yellow-955 font-sans text-xl font-bold">
-          Failed attempts: {misses}
-        </p>
-        <p className="text-yellow-955 text-sm md:text-base font-bold font-sans mt-2 opacity-85 text-yellow-950">
-          Click to win.
-        </p>
-      </div>
+
 
       {/* Stage 2 In-game pity popup (5 seconds display duration) */}
       {stage2PityActive && (
@@ -1154,13 +1201,18 @@ const SisyphusSuite: React.FC = () => {
         </h2>
       </div>
 
-      {/* Quit button always turns red when hovered over */}
-      <button
-        onClick={() => setShowQuitConfirm(true)}
-        className="absolute top-6 right-6 text-sm tracking-widest uppercase bg-slate-900 hover:bg-red-600 text-slate-100 hover:text-white px-6 py-2.5 rounded-lg border border-slate-700 hover:border-red-600 transition-all font-bold z-50 shadow-lg hover:scale-105 active:scale-95"
-      >
-        Quit
-      </button>
+      {/* Top right controls */}
+      <div className="absolute top-6 right-6 flex items-center gap-4 z-50">
+        <span className="text-zinc-400 font-sans text-sm font-bold">
+          Failed attempts: {stage3Fails}
+        </span>
+        <button
+          onClick={() => setShowQuitConfirm(true)}
+          className="text-sm tracking-widest uppercase bg-slate-900 hover:bg-red-600 text-slate-100 hover:text-white px-6 py-2.5 rounded-lg border border-slate-700 hover:border-red-600 transition-all font-bold shadow-lg hover:scale-105 active:scale-95"
+        >
+          Quit
+        </button>
+      </div>
 
       <p className="text-zinc-100 text-lg md:text-xl font-bold text-center max-w-md leading-relaxed font-sans mt-12">
         Survive <span className="text-amber-400 font-bold">5 seconds</span> to move on to the next level.<br />
@@ -1198,20 +1250,14 @@ const SisyphusSuite: React.FC = () => {
           alt="Bird"
           className="absolute pointer-events-none"
           style={{
-            left: '12.5%',
-            width: '3.75%',
-            height: '6%',
-            top: '50%',
+            left: BIRD_AVATAR_LEFT,
+            width: BIRD_AVATAR_WIDTH,
+            height: BIRD_AVATAR_HEIGHT,
+            top: BIRD_AVATAR_TOP_INITIAL,
             display: 'block',
           }}
         />
       </div>
-
-      {stage3Fails > 0 && (
-        <p className="text-zinc-400 font-sans text-base font-bold mt-4">
-          Failed attempts: {stage3Fails}
-        </p>
-      )}
 
       {/* Stage 3 In-game pity popup (5 seconds display duration) */}
       {stage3PityActive && (
@@ -1237,13 +1283,18 @@ const SisyphusSuite: React.FC = () => {
         </h2>
       </div>
 
-      {/* Quit button always turns red when hovered over */}
-      <button
-        onClick={() => setShowQuitConfirm(true)}
-        className="absolute top-6 right-6 text-sm tracking-widest uppercase bg-slate-900 hover:bg-red-600 text-slate-100 hover:text-white px-6 py-2.5 rounded-lg border border-slate-700 hover:border-red-600 transition-all font-bold z-50 shadow-lg hover:scale-105 active:scale-95"
-      >
-        Quit
-      </button>
+      {/* Top right controls */}
+      <div className="absolute top-6 right-6 flex items-center gap-4 z-50">
+        <span className="text-slate-400 font-sans text-sm font-bold">
+          Failed attempts: {stage4Fails}
+        </span>
+        <button
+          onClick={() => setShowQuitConfirm(true)}
+          className="text-sm tracking-widest uppercase bg-slate-900 hover:bg-red-600 text-slate-100 hover:text-white px-6 py-2.5 rounded-lg border border-slate-700 hover:border-red-600 transition-all font-bold z-50 shadow-lg hover:scale-105 active:scale-95"
+        >
+          Quit
+        </button>
+      </div>
 
       <div className="text-center flex flex-col items-center mt-12">
         {/* Instructions text is larger and bold */}
@@ -1301,9 +1352,9 @@ const SisyphusSuite: React.FC = () => {
           {pongPassed && (
             <div className="absolute inset-0 bg-black/80 flex items-center justify-center z-30 transition-opacity duration-300">
               <div className="bg-slate-900 border border-slate-700 px-8 py-6 rounded-xl text-center shadow-2xl animate-pulse">
-                <h3 className="text-2xl font-bold text-amber-400 tracking-wide font-serif">
-                  Took you long enough to figure that one out,<br />
-                  Sometimes You Lose The War To Win The Battle.<br />
+                <h3 className="text-base md:text-lg font-bold text-amber-400 tracking-wide font-serif">
+                  Took You Long Enough To Figure That One Out<br />
+                  Sometimes You Have To Lose The War To Win The Battle.<br />
                   or something like that...
                 </h3>
               </div>
@@ -1327,13 +1378,18 @@ const SisyphusSuite: React.FC = () => {
         </h2>
       </div>
 
-      {/* Quit button always turns red when hovered over */}
-      <button
-        onClick={() => setShowQuitConfirm(true)}
-        className="absolute top-6 right-6 text-sm tracking-widest uppercase bg-slate-900 hover:bg-red-600 text-slate-100 hover:text-white px-6 py-2.5 rounded-lg border border-slate-700 hover:border-red-600 transition-all font-bold z-50 shadow-lg hover:scale-105 active:scale-95"
-      >
-        Quit
-      </button>
+      {/* Top right controls */}
+      <div className="absolute top-6 right-6 flex items-center gap-4 z-50">
+        <span className="text-slate-400 font-sans text-sm font-bold">
+          Failed attempts: {crosswordFails}
+        </span>
+        <button
+          onClick={() => setShowQuitConfirm(true)}
+          className="text-sm tracking-widest uppercase bg-slate-900 hover:bg-red-600 text-slate-100 hover:text-white px-6 py-2.5 rounded-lg border border-slate-700 hover:border-red-600 transition-all font-bold shadow-lg hover:scale-105 active:scale-95"
+        >
+          Quit
+        </button>
+      </div>
 
       <div className="max-w-md w-full bg-slate-900 border border-slate-800 rounded-xl p-8 shadow-2xl flex flex-col items-center gap-6 relative mt-12">
         {/* Headings - Both FIND and WORDS are the same color */}
@@ -1468,9 +1524,16 @@ const SisyphusSuite: React.FC = () => {
 
       <div className="max-w-xl w-full px-8 py-12 text-center relative z-10 flex flex-col items-center">
         <img
-          src={FINAL_IMAGE}
-          alt="Final Sisyphus"
-          className="max-w-md h-60 object-contain mb-8 rounded shadow-md border border-amber-200/50"
+          src={END_SCREEN_LAUGH_GIF}
+          alt="Laughing Guy"
+          style={{
+            width: END_GIF_WIDTH,
+            height: END_GIF_HEIGHT,
+            marginBottom: END_GIF_MARGIN_BOTTOM,
+            objectFit: 'contain',
+            borderRadius: '8px',
+            border: '1px solid rgba(245, 158, 11, 0.5)',
+          }}
         />
         <p className="tracking-[0.45em] uppercase text-amber-700 text-xs mb-6 font-bold">
           Labor Concluded
